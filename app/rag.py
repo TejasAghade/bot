@@ -52,7 +52,7 @@ class RAGService:
         context = self._format_context(filtered)
         prompt = self._build_prompt(question, context)
         raw_response = self.llm.invoke(prompt)
-        answer = (raw_response.content or "").strip()
+        answer = _sanitize_answer(raw_response.content or "")
         if not answer:
             answer = UNKNOWN_ANSWER
 
@@ -76,7 +76,8 @@ You MUST answer using only the provided context.
 If the answer is not explicitly available in the context, reply exactly:
 "{UNKNOWN_ANSWER}"
 Do not use outside knowledge. Do not guess.
-When you answer, include source citations like [1], [2] tied to context blocks.
+Return only the final answer text.
+Do not include source metadata, index tags, similarity scores, or context labels.
 
 Context:
 {context}
@@ -108,3 +109,11 @@ def _term_overlap_ratio(question: str, content: str) -> float:
     haystack = content.lower()
     hits = sum(1 for term in terms if term in haystack)
     return hits / len(terms)
+
+
+def _sanitize_answer(text: str) -> str:
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"(?mi)^\[\d+\]\s*source=.*(?:\r?\n)?", "", cleaned)
+    cleaned = re.sub(r"(?mi)^source=.*(?:\r?\n)?", "", cleaned)
+    cleaned = re.sub(r"(?mi)^similarity=.*(?:\r?\n)?", "", cleaned)
+    return cleaned.strip()

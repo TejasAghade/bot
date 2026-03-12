@@ -63,7 +63,5 @@ def chat(payload: ChatRequest) -> ChatResponse:
     result = service.answer(question)
     return ChatResponse(
         answer=result.answer,
-        sources=result.sources,
         used_context=result.used_context,
     )
-

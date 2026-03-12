@@ -7,7 +7,6 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    sources: list[str]
     used_context: bool
 
 
@@ -19,4 +18,3 @@ class IngestResponse(BaseModel):
     documents_loaded: int
     chunks_indexed: int
     total_chunks_in_store: int
-

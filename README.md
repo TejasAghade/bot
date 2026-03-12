@@ -115,7 +115,7 @@ const res = await fetch("http://localhost:8000/chat", {
   body: JSON.stringify({ question: userInput }),
 });
 const data = await res.json();
-// data.answer, data.sources, data.used_context
+// data.answer, data.used_context
 ```
 
 ## 8. Tuning for stricter behavior
