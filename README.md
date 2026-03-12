@@ -59,6 +59,10 @@ https://your-doc-site.com/getting-started
 https://your-doc-site.com/api-reference
 ```
 
+For private Azure DevOps Wiki URLs, set `AZURE_DEVOPS_PAT` in `.env` and include the wiki URLs in `data/urls.txt`.
+The loader automatically sends PAT auth for `dev.azure.com` and `*.visualstudio.com` URLs.
+For public Google Docs links, you can paste the normal sharing URL; the loader automatically uses the text export endpoint.
+
 ## 4. Build index
 
 Rebuild index from scratch:
@@ -120,6 +124,7 @@ In `.env`:
 - Increase `MIN_RELEVANCE` (for example `0.65`) to be stricter.
 - Increase `TOP_K` if some valid answers are missed.
 - Increase `CHUNK_SIZE` for broader context per chunk.
+- Set `AZURE_DEVOPS_PAT` for private Azure Wiki ingestion.
 
 ## Notes
 

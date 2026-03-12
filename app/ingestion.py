@@ -14,7 +14,11 @@ def run_ingestion(append: bool = False, settings: Settings | None = None) -> dic
     if not append:
         clear_vectorstore(vectorstore)
 
-    documents = load_documents(cfg.data_dir, cfg.urls_file)
+    documents = load_documents(
+        cfg.data_dir,
+        cfg.urls_file,
+        azure_devops_pat=cfg.azure_devops_pat,
+    )
     if not documents:
         return {
             "documents_loaded": 0,

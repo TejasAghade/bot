@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.2:3b"
     embedding_model: str = "nomic-embed-text"
+    azure_devops_pat: str | None = None
     cors_origins: str = "*"
 
     model_config = SettingsConfigDict(
@@ -44,4 +45,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
