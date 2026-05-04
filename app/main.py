@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.document_loader import DocumentLoadError
 from app.ingestion import run_ingestion
 from app.rag import RAGService
 from app.schemas import ChatRequest, ChatResponse, IngestRequest, IngestResponse
@@ -42,7 +43,10 @@ def health() -> dict[str, object]:
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(payload: IngestRequest) -> IngestResponse:
-    result = run_ingestion(append=payload.append, settings=settings)
+    try:
+        result = run_ingestion(append=payload.append, settings=settings)
+    except DocumentLoadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     rag_service().reload_vectorstore()
     return IngestResponse(**result)
 

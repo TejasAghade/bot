@@ -2,6 +2,7 @@
 
 This project creates a chatbot that answers only from your provided data:
 - Documentation pages (via URLs list)
+- Private Azure DevOps wiki pages (via PAT + wiki API)
 - PDF files
 - Text / Markdown / HTML files
 
@@ -61,6 +62,21 @@ https://your-doc-site.com/api-reference
 
 For private Azure DevOps Wiki URLs, set `AZURE_DEVOPS_PAT` in `.env` and include the wiki URLs in `data/urls.txt`.
 The loader automatically sends PAT auth for `dev.azure.com` and `*.visualstudio.com` URLs.
+For full private wiki ingestion through the official Azure DevOps wiki API, set:
+
+```txt
+AZURE_DEVOPS_PAT=your_pat
+AZURE_DEVOPS_ORG=your-org
+AZURE_DEVOPS_PROJECT=your-project
+AZURE_DEVOPS_WIKI=
+AZURE_DEVOPS_WIKI_PATH=/
+AZURE_DEVOPS_API_VERSION=7.1
+```
+
+If `AZURE_DEVOPS_WIKI` is blank, the bot lists all wikis in the project and recursively indexes every wiki.
+If `AZURE_DEVOPS_WIKI` is set, it only indexes that one wiki.
+This path includes private pages and indexes page content directly into the bot.
+Your PAT needs wiki read access. For Azure DevOps REST wiki APIs, the documented scope is `vso.wiki`.
 For public Google Docs links, you can paste the normal sharing URL; the loader automatically uses the text export endpoint.
 
 ## 4. Build index
@@ -123,10 +139,14 @@ const data = await res.json();
 In `.env`:
 - Increase `MIN_RELEVANCE` (for example `0.65`) to be stricter.
 - Increase `TOP_K` if some valid answers are missed.
+- Lower `TOP_K`, `MAX_CONTEXT_DOCS`, or `LLM_NUM_PREDICT` if replies are still too slow.
+- Increase `LLM_NUM_PREDICT` or `MAX_ANSWER_SENTENCES` if answers are too short.
 - Increase `CHUNK_SIZE` for broader context per chunk.
-- Set `AZURE_DEVOPS_PAT` for private Azure Wiki ingestion.
+- Set `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, and `AZURE_DEVOPS_PAT` to ingest all private project wikis.
+- Set `AZURE_DEVOPS_WIKI` only when you want to limit ingestion to one wiki.
 
 ## Notes
 
 - The strict prompt and retrieval threshold reduce hallucinations.
+- Repeated questions are cached in memory, and highly relevant single-page answers can skip the LLM for lower latency.
 - No model can guarantee perfection, but this setup is designed to reject out-of-scope questions by default.

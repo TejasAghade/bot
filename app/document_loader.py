@@ -4,7 +4,7 @@ import base64
 import logging
 from pathlib import Path
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,14 +17,45 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".pdf", ".html", ".htm"}
 
 
+class DocumentLoadError(RuntimeError):
+    pass
+
+
 def load_documents(
     data_dir: str,
     urls_file: str | None = None,
     azure_devops_pat: str | None = None,
+    azure_devops_org: str | None = None,
+    azure_devops_project: str | None = None,
+    azure_devops_wiki: str | None = None,
+    azure_devops_wiki_path: str = "/",
+    azure_devops_api_version: str = "7.1",
 ) -> list[Document]:
     documents = load_local_documents(data_dir)
     if urls_file:
         documents.extend(load_url_documents(urls_file, azure_devops_pat=azure_devops_pat))
+    if azure_devops_pat and azure_devops_org and azure_devops_project:
+        if azure_devops_wiki:
+            documents.extend(
+                load_azure_devops_wiki_documents(
+                    organization=azure_devops_org,
+                    project=azure_devops_project,
+                    wiki_identifier=azure_devops_wiki,
+                    wiki_path=azure_devops_wiki_path,
+                    azure_devops_pat=azure_devops_pat,
+                    api_version=azure_devops_api_version,
+                )
+            )
+        else:
+            documents.extend(
+                load_all_azure_devops_project_wikis(
+                    organization=azure_devops_org,
+                    project=azure_devops_project,
+                    wiki_path=azure_devops_wiki_path,
+                    azure_devops_pat=azure_devops_pat,
+                    api_version=azure_devops_api_version,
+                )
+            )
     return documents
 
 
@@ -92,6 +123,113 @@ def load_url_documents(urls_file: str, azure_devops_pat: str | None = None) -> l
                 )
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning("Failed to load url %s: %s", url, exc)
+    return documents
+
+
+def load_azure_devops_wiki_documents(
+    organization: str,
+    project: str,
+    wiki_identifier: str,
+    wiki_path: str,
+    azure_devops_pat: str,
+    api_version: str = "7.1",
+) -> list[Document]:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Accept": "application/json",
+            "User-Agent": "drs-chatbot-ingestion/1.0",
+            **_basic_auth_headers(azure_devops_pat),
+        }
+    )
+    endpoint = _azure_devops_wiki_endpoint(organization, project, wiki_identifier)
+    response = session.get(
+        endpoint,
+        params={
+            "path": _normalize_wiki_path(wiki_path),
+            "recursionLevel": "full",
+            "includeContent": "true",
+            "api-version": api_version,
+        },
+        timeout=30,
+    )
+    _raise_for_azure_response(
+        response,
+        context=(
+            f"Azure DevOps wiki read failed for project '{project}' and wiki '{wiki_identifier}'. "
+            "Check that AZURE_DEVOPS_PAT is valid, has wiki read access, and can access this project."
+        ),
+    )
+    payload = response.json()
+
+    documents: list[Document] = []
+    _collect_azure_wiki_pages(
+        node=payload,
+        documents=documents,
+        session=session,
+        endpoint=endpoint,
+        api_version=api_version,
+    )
+    return documents
+
+
+def load_all_azure_devops_project_wikis(
+    organization: str,
+    project: str,
+    wiki_path: str,
+    azure_devops_pat: str,
+    api_version: str = "7.1",
+) -> list[Document]:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Accept": "application/json",
+            "User-Agent": "drs-chatbot-ingestion/1.0",
+            **_basic_auth_headers(azure_devops_pat),
+        }
+    )
+    response = session.get(
+        _azure_devops_wikis_endpoint(organization, project),
+        params={"api-version": api_version},
+        timeout=30,
+    )
+    _raise_for_azure_response(
+        response,
+        context=(
+            f"Azure DevOps wiki listing failed for project '{project}'. "
+            "Check that AZURE_DEVOPS_PAT is valid, has the 'vso.wiki' scope, and can access this project. "
+            "If you changed .env after starting the API, restart uvicorn so the new PAT is loaded."
+        ),
+    )
+    payload = response.json()
+
+    if isinstance(payload, list):
+        wikis = payload
+    else:
+        wikis = payload.get("value") or []
+
+    documents: list[Document] = []
+    seen_identifiers: set[str] = set()
+    for wiki in wikis:
+        if not isinstance(wiki, dict):
+            continue
+        wiki_identifier = str(wiki.get("id") or wiki.get("name") or "").strip()
+        if not wiki_identifier or wiki_identifier in seen_identifiers:
+            continue
+        seen_identifiers.add(wiki_identifier)
+        try:
+            documents.extend(
+                load_azure_devops_wiki_documents(
+                    organization=organization,
+                    project=project,
+                    wiki_identifier=wiki_identifier,
+                    wiki_path=wiki_path,
+                    azure_devops_pat=azure_devops_pat,
+                    api_version=api_version,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Failed to load Azure DevOps wiki %s: %s", wiki_identifier, exc)
     return documents
 
 
@@ -182,9 +320,110 @@ def _auth_headers_for_url(url: str, azure_devops_pat: str | None) -> dict[str, s
     if not _is_azure_devops_host(host):
         return {}
 
-    token = base64.b64encode(f":{azure_devops_pat}".encode("utf-8")).decode("ascii")
-    return {"Authorization": f"Basic {token}"}
+    return _basic_auth_headers(azure_devops_pat)
 
 
 def _is_azure_devops_host(host: str) -> bool:
     return "dev.azure.com" in host or host.endswith(".visualstudio.com")
+
+
+def _basic_auth_headers(personal_access_token: str) -> dict[str, str]:
+    token = base64.b64encode(f":{personal_access_token}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
+def _azure_devops_wiki_endpoint(organization: str, project: str, wiki_identifier: str) -> str:
+    org = quote(organization, safe="")
+    proj = quote(project, safe="")
+    wiki = quote(wiki_identifier, safe="")
+    return f"https://dev.azure.com/{org}/{proj}/_apis/wiki/wikis/{wiki}/pages"
+
+
+def _azure_devops_wikis_endpoint(organization: str, project: str) -> str:
+    org = quote(organization, safe="")
+    proj = quote(project, safe="")
+    return f"https://dev.azure.com/{org}/{proj}/_apis/wiki/wikis"
+
+
+def _normalize_wiki_path(path: str | None) -> str:
+    raw = (path or "/").strip()
+    if not raw:
+        return "/"
+    return raw if raw.startswith("/") else f"/{raw}"
+
+
+def _collect_azure_wiki_pages(
+    node: dict,
+    documents: list[Document],
+    session: requests.Session,
+    endpoint: str,
+    api_version: str,
+) -> None:
+    content = _clean_text(str(node.get("content") or ""))
+    page_path = str(node.get("path") or "")
+    remote_url = str(node.get("remoteUrl") or "")
+    page_id = node.get("id")
+
+    if not content and page_path:
+        content = _fetch_azure_wiki_page_content(
+            session=session,
+            endpoint=endpoint,
+            page_path=page_path,
+            api_version=api_version,
+        )
+
+    if content:
+        documents.append(
+            Document(
+                page_content=content,
+                metadata={
+                    "source": remote_url or f"azure-wiki:{page_path}",
+                    "path": page_path,
+                    "page_id": page_id,
+                    "type": "azure_devops_wiki",
+                },
+            )
+        )
+
+    for child in node.get("subPages") or []:
+        if isinstance(child, dict):
+            _collect_azure_wiki_pages(
+                node=child,
+                documents=documents,
+                session=session,
+                endpoint=endpoint,
+                api_version=api_version,
+            )
+
+
+def _fetch_azure_wiki_page_content(
+    session: requests.Session,
+    endpoint: str,
+    page_path: str,
+    api_version: str,
+) -> str:
+    response = session.get(
+        endpoint,
+        params={
+            "path": _normalize_wiki_path(page_path),
+            "includeContent": "true",
+            "api-version": api_version,
+        },
+        timeout=30,
+    )
+    _raise_for_azure_response(
+        response,
+        context=f"Azure DevOps wiki page read failed for path '{page_path}'.",
+    )
+    payload = response.json()
+    return _clean_text(str(payload.get("content") or ""))
+
+
+def _raise_for_azure_response(response: requests.Response, context: str) -> None:
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        status = response.status_code
+        if status in {401, 403}:
+            raise DocumentLoadError(context) from exc
+        raise DocumentLoadError(f"{context} Azure returned HTTP {status}.") from exc

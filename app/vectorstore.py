@@ -10,6 +10,7 @@ def get_embeddings(settings: Settings) -> OllamaEmbeddings:
     return OllamaEmbeddings(
         model=settings.embedding_model,
         base_url=settings.ollama_base_url,
+        keep_alive=settings.embedding_keep_alive,
     )
 
 

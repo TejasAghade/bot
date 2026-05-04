@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 import re
 
 from langchain_ollama import ChatOllama
@@ -26,15 +27,27 @@ class RAGService:
             model=settings.llm_model,
             base_url=settings.ollama_base_url,
             temperature=0,
+            num_predict=settings.llm_num_predict,
+            keep_alive=settings.ollama_keep_alive,
         )
+        self._cache: OrderedDict[str, RAGResult] = OrderedDict()
+        self._cache_revision = 0
 
     def reload_vectorstore(self) -> None:
         self.vectorstore = get_vectorstore(self.settings)
+        self._cache_revision += 1
+        self._cache.clear()
 
     def indexed_document_count(self) -> int:
         return self.vectorstore._collection.count()
 
     def answer(self, question: str) -> RAGResult:
+        cache_key = self._cache_key(question)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            self._cache.move_to_end(cache_key)
+            return cached
+
         raw_matches = self.vectorstore.similarity_search_with_score(question, k=self.settings.top_k)
         matches = [(doc, _distance_to_similarity(distance)) for doc, distance in raw_matches]
         filtered = [(doc, score) for doc, score in matches if score >= self.settings.min_relevance]
@@ -47,7 +60,18 @@ class RAGService:
                 filtered = [(top_doc, top_score)]
 
         if not filtered:
-            return RAGResult(answer=UNKNOWN_ANSWER, sources=[], used_context=False)
+            result = RAGResult(answer=UNKNOWN_ANSWER, sources=[], used_context=False)
+            self._remember(cache_key, result)
+            return result
+
+        filtered = filtered[: self.settings.max_context_docs]
+        sources = self._sources(filtered)
+
+        fast_answer = self._fast_answer(question, filtered)
+        if fast_answer:
+            result = RAGResult(answer=fast_answer, sources=sources, used_context=True)
+            self._remember(cache_key, result)
+            return result
 
         context = self._format_context(filtered)
         prompt = self._build_prompt(question, context)
@@ -56,26 +80,35 @@ class RAGService:
         if not answer:
             answer = UNKNOWN_ANSWER
 
-        sources = self._sources(filtered)
-        return RAGResult(answer=answer, sources=sources, used_context=True)
+        result = RAGResult(answer=answer, sources=sources, used_context=True)
+        self._remember(cache_key, result)
+        return result
 
     def _format_context(self, filtered_matches) -> str:
         parts: list[str] = []
+        total_chars = 0
         for idx, (doc, score) in enumerate(filtered_matches, start=1):
             source = str(doc.metadata.get("source", "unknown"))
             page = doc.metadata.get("page")
             page_text = f", page {page}" if page else ""
-            parts.append(
-                f"[{idx}] source={source}{page_text}, similarity={score:.3f}\n{doc.page_content}"
-            )
+            remaining = self.settings.max_context_chars - total_chars
+            if remaining <= 0:
+                break
+            content = doc.page_content[:remaining]
+            snippet = f"[{idx}] source={source}{page_text}, similarity={score:.3f}\n{content}"
+            parts.append(snippet)
+            total_chars += len(snippet) + 2
         return "\n\n".join(parts)
 
     def _build_prompt(self, question: str, context: str) -> str:
-        return f"""You are a strict documentation assistant.
-You MUST answer using only the provided context.
+        return f"""You are the user's internal knowledge assistant.
+Answer like a helpful teammate in chat, but use only the provided context.
 If the answer is not explicitly available in the context, reply exactly:
 "{UNKNOWN_ANSWER}"
 Do not use outside knowledge. Do not guess.
+Give a moderately detailed answer.
+Prefer 1 to 3 short paragraphs, or a short ordered list when the docs describe steps.
+Include the important details needed to act on the answer, not just a one-line summary.
 Return only the final answer text.
 Do not include source metadata, index tags, similarity scores, or context labels.
 
@@ -95,6 +128,35 @@ Question:
             if display not in output:
                 output.append(display)
         return output
+
+    def _fast_answer(self, question: str, filtered_matches) -> str | None:
+        top_doc, top_score = filtered_matches[0]
+        if top_score < self.settings.fast_path_min_relevance:
+            return None
+
+        sentences = _candidate_sentences(top_doc.page_content)
+        ranked = sorted(
+            (
+                (_term_overlap_ratio(question, sentence), sentence)
+                for sentence in sentences
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        chosen = [sentence for score, sentence in ranked if score >= 0.45][: self.settings.max_answer_sentences]
+        if not chosen:
+            return None
+        return " ".join(chosen).strip()
+
+    def _cache_key(self, question: str) -> str:
+        normalized = " ".join(question.lower().split())
+        return f"{self._cache_revision}:{normalized}"
+
+    def _remember(self, cache_key: str, result: RAGResult) -> None:
+        self._cache[cache_key] = result
+        self._cache.move_to_end(cache_key)
+        while len(self._cache) > self.settings.answer_cache_size:
+            self._cache.popitem(last=False)
 
 
 def _distance_to_similarity(distance: float) -> float:
@@ -117,3 +179,19 @@ def _sanitize_answer(text: str) -> str:
     cleaned = re.sub(r"(?mi)^source=.*(?:\r?\n)?", "", cleaned)
     cleaned = re.sub(r"(?mi)^similarity=.*(?:\r?\n)?", "", cleaned)
     return cleaned.strip()
+
+
+def _candidate_sentences(text: str) -> list[str]:
+    raw_sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    sentences: list[str] = []
+    seen: set[str] = set()
+    for sentence in raw_sentences:
+        cleaned = " ".join(sentence.split()).strip()
+        if len(cleaned) < 20:
+            continue
+        normalized = cleaned.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        sentences.append(cleaned)
+    return sentences
