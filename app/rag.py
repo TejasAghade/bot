@@ -134,19 +134,22 @@ Question:
         if top_score < self.settings.fast_path_min_relevance:
             return None
 
-        sentences = _candidate_sentences(top_doc.page_content)
-        ranked = sorted(
-            (
-                (_term_overlap_ratio(question, sentence), sentence)
-                for sentence in sentences
-            ),
-            key=lambda item: item[0],
-            reverse=True,
+        ranked_passages: list[tuple[float, str]] = []
+        for doc, doc_score in filtered_matches[: self.settings.fast_path_max_docs]:
+            for passage in _candidate_passages(doc.page_content):
+                overlap = _term_overlap_ratio(question, passage)
+                score = overlap + (doc_score * 0.15)
+                ranked_passages.append((score, passage))
+
+        ranked_passages.sort(key=lambda item: item[0], reverse=True)
+        chosen = _select_diverse_passages(
+            ranked_passages,
+            max_items=self.settings.max_answer_sentences,
+            min_score=self.settings.fast_path_min_overlap,
         )
-        chosen = [sentence for score, sentence in ranked if score >= 0.45][: self.settings.max_answer_sentences]
         if not chosen:
             return None
-        return " ".join(chosen).strip()
+        return _format_extractive_answer(chosen)
 
     def _cache_key(self, question: str) -> str:
         normalized = " ".join(question.lower().split())
@@ -181,7 +184,7 @@ def _sanitize_answer(text: str) -> str:
     return cleaned.strip()
 
 
-def _candidate_sentences(text: str) -> list[str]:
+def _candidate_passages(text: str) -> list[str]:
     raw_sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
     sentences: list[str] = []
     seen: set[str] = set()
@@ -189,9 +192,41 @@ def _candidate_sentences(text: str) -> list[str]:
         cleaned = " ".join(sentence.split()).strip()
         if len(cleaned) < 20:
             continue
+        if len(cleaned) > 260:
+            cleaned = cleaned[:257].rstrip() + "..."
         normalized = cleaned.lower()
         if normalized in seen:
             continue
         seen.add(normalized)
         sentences.append(cleaned)
     return sentences
+
+
+def _select_diverse_passages(
+    ranked_passages: list[tuple[float, str]],
+    max_items: int,
+    min_score: float,
+) -> list[str]:
+    chosen: list[str] = []
+    normalized_seen: set[str] = set()
+    for score, passage in ranked_passages:
+        if score < min_score:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", " ", passage.lower()).strip()
+        if normalized in normalized_seen:
+            continue
+        if any(_term_overlap_ratio(existing, passage) >= 0.8 for existing in chosen):
+            continue
+        normalized_seen.add(normalized)
+        chosen.append(passage)
+        if len(chosen) >= max_items:
+            break
+    return chosen
+
+
+def _format_extractive_answer(passages: list[str]) -> str:
+    if not passages:
+        return ""
+    if len(passages) <= 2:
+        return " ".join(passages).strip()
+    return "\n".join(f"- {passage}" for passage in passages)

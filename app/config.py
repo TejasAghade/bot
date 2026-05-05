@@ -16,13 +16,15 @@ class Settings(BaseSettings):
     max_context_docs: int = 3
     max_context_chars: int = 3500
     min_relevance: float = 0.55
-    fast_path_min_relevance: float = 0.72
-    max_answer_sentences: int = 5
+    fast_path_min_relevance: float = 0.6
+    fast_path_min_overlap: float = 0.2
+    fast_path_max_docs: int = 2
+    max_answer_sentences: int = 6
     answer_cache_size: int = 128
 
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.2:3b"
-    llm_num_predict: int = 320
+    llm_num_predict: int = 192
     ollama_keep_alive: str = "30m"
     embedding_model: str = "nomic-embed-text"
     embedding_keep_alive: int = 1800
@@ -53,6 +55,13 @@ class Settings(BaseSettings):
     def validate_fast_path_relevance(cls, value: float) -> float:
         if not 0 <= value <= 1:
             raise ValueError("FAST_PATH_MIN_RELEVANCE must be between 0 and 1.")
+        return value
+
+    @field_validator("fast_path_min_overlap")
+    @classmethod
+    def validate_fast_path_overlap(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("FAST_PATH_MIN_OVERLAP must be between 0 and 1.")
         return value
 
     @property

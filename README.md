@@ -141,6 +141,7 @@ In `.env`:
 - Increase `TOP_K` if some valid answers are missed.
 - Lower `TOP_K`, `MAX_CONTEXT_DOCS`, or `LLM_NUM_PREDICT` if replies are still too slow.
 - Increase `LLM_NUM_PREDICT` or `MAX_ANSWER_SENTENCES` if answers are too short.
+- Lower `FAST_PATH_MIN_RELEVANCE` if you want the bot to use direct extractive answers more often instead of waiting for the LLM.
 - Increase `CHUNK_SIZE` for broader context per chunk.
 - Set `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, and `AZURE_DEVOPS_PAT` to ingest all private project wikis.
 - Set `AZURE_DEVOPS_WIKI` only when you want to limit ingestion to one wiki.
