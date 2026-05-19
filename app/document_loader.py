@@ -27,6 +27,7 @@ def load_documents(
     azure_devops_pat: str | None = None,
     azure_devops_org: str | None = None,
     azure_devops_project: str | None = None,
+    azure_devops_projects: list[str] | None = None,
     azure_devops_wiki: str | None = None,
     azure_devops_wiki_path: str = "/",
     azure_devops_api_version: str = "7.1",
@@ -34,29 +35,57 @@ def load_documents(
     documents = load_local_documents(data_dir)
     if urls_file:
         documents.extend(load_url_documents(urls_file, azure_devops_pat=azure_devops_pat))
-    if azure_devops_pat and azure_devops_org and azure_devops_project:
-        if azure_devops_wiki:
-            documents.extend(
-                load_azure_devops_wiki_documents(
-                    organization=azure_devops_org,
-                    project=azure_devops_project,
-                    wiki_identifier=azure_devops_wiki,
-                    wiki_path=azure_devops_wiki_path,
-                    azure_devops_pat=azure_devops_pat,
-                    api_version=azure_devops_api_version,
-                )
-            )
-        else:
-            documents.extend(
-                load_all_azure_devops_project_wikis(
-                    organization=azure_devops_org,
-                    project=azure_devops_project,
-                    wiki_path=azure_devops_wiki_path,
-                    azure_devops_pat=azure_devops_pat,
-                    api_version=azure_devops_api_version,
-                )
-            )
+
+    projects = _resolve_project_list(azure_devops_projects, azure_devops_project)
+    if azure_devops_pat and azure_devops_org and projects:
+        # When multiple projects are configured, ignore AZURE_DEVOPS_WIKI (a single
+        # wiki identifier cannot meaningfully apply across projects) and ingest every
+        # wiki in each project.
+        restrict_to_single_wiki = bool(azure_devops_wiki) and len(projects) == 1
+        for project_name in projects:
+            try:
+                if restrict_to_single_wiki:
+                    documents.extend(
+                        load_azure_devops_wiki_documents(
+                            organization=azure_devops_org,
+                            project=project_name,
+                            wiki_identifier=azure_devops_wiki,
+                            wiki_path=azure_devops_wiki_path,
+                            azure_devops_pat=azure_devops_pat,
+                            api_version=azure_devops_api_version,
+                        )
+                    )
+                else:
+                    documents.extend(
+                        load_all_azure_devops_project_wikis(
+                            organization=azure_devops_org,
+                            project=project_name,
+                            wiki_path=azure_devops_wiki_path,
+                            azure_devops_pat=azure_devops_pat,
+                            api_version=azure_devops_api_version,
+                        )
+                    )
+            except DocumentLoadError as exc:
+                logger.warning("Skipping Azure DevOps project '%s': %s", project_name, exc)
     return documents
+
+
+def _resolve_project_list(
+    projects: list[str] | None,
+    fallback_project: str | None,
+) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for name in projects or []:
+        cleaned = (name or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            resolved.append(cleaned)
+    if not resolved and fallback_project:
+        cleaned = fallback_project.strip()
+        if cleaned:
+            resolved.append(cleaned)
+    return resolved
 
 
 def load_local_documents(data_dir: str) -> list[Document]:
@@ -169,6 +198,8 @@ def load_azure_devops_wiki_documents(
         session=session,
         endpoint=endpoint,
         api_version=api_version,
+        project=project,
+        wiki_identifier=wiki_identifier,
     )
     return documents
 
@@ -358,6 +389,8 @@ def _collect_azure_wiki_pages(
     session: requests.Session,
     endpoint: str,
     api_version: str,
+    project: str | None = None,
+    wiki_identifier: str | None = None,
 ) -> None:
     content = _clean_text(str(node.get("content") or ""))
     page_path = str(node.get("path") or "")
@@ -377,9 +410,11 @@ def _collect_azure_wiki_pages(
             Document(
                 page_content=content,
                 metadata={
-                    "source": remote_url or f"azure-wiki:{page_path}",
+                    "source": remote_url or f"azure-wiki:{project or ''}:{page_path}",
                     "path": page_path,
                     "page_id": page_id,
+                    "project": project,
+                    "wiki": wiki_identifier,
                     "type": "azure_devops_wiki",
                 },
             )
@@ -393,6 +428,8 @@ def _collect_azure_wiki_pages(
                 session=session,
                 endpoint=endpoint,
                 api_version=api_version,
+                project=project,
+                wiki_identifier=wiki_identifier,
             )
 
 

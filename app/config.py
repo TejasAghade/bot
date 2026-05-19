@@ -26,11 +26,13 @@ class Settings(BaseSettings):
     llm_model: str = "llama3.2:3b"
     llm_num_predict: int = 192
     ollama_keep_alive: str = "30m"
-    embedding_model: str = "nomic-embed-text"
-    embedding_keep_alive: int = 1800
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_threads: int | None = None
+    embedding_cache_dir: str | None = None
     azure_devops_pat: str | None = None
     azure_devops_org: str | None = None
     azure_devops_project: str | None = None
+    azure_devops_projects: str | None = None
     azure_devops_wiki: str | None = None
     azure_devops_wiki_path: str = "/"
     azure_devops_api_version: str = "7.1"
@@ -69,6 +71,21 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def azure_devops_projects_list(self) -> list[str]:
+        projects: list[str] = []
+        seen: set[str] = set()
+        for raw in (self.azure_devops_projects or "").split(","):
+            name = raw.strip()
+            if name and name not in seen:
+                seen.add(name)
+                projects.append(name)
+        if not projects and self.azure_devops_project:
+            single = self.azure_devops_project.strip()
+            if single:
+                projects.append(single)
+        return projects
 
 
 @lru_cache

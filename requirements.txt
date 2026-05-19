@@ -1,6 +1,7 @@
 beautifulsoup4==4.13.5
 chromadb
 fastapi==0.116.1
+fastembed==0.7.4
 langchain==0.3.27
 langchain-chroma==0.2.5
 langchain-community==0.3.27

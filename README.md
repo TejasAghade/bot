@@ -42,12 +42,13 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-4. Install and start Ollama, then pull models:
+4. Install and start Ollama, then pull the chat model:
 
 ```bash
 ollama pull llama3.2:3b
-ollama pull nomic-embed-text
 ```
+
+Embeddings now run locally via [fastembed](https://github.com/qdrant/fastembed) (ONNX). The first ingest auto-downloads the configured embedding model (`nomic-ai/nomic-embed-text-v1.5` by default, ~300 MB) from HuggingFace into `~/.cache/fastembed/`. After that it works fully offline. Override with `EMBEDDING_MODEL` in `.env` (e.g. `BAAI/bge-small-en-v1.5` for a smaller/faster option), or set `EMBEDDING_CACHE_DIR` to relocate the cache.
 
 ## 3. Add your data
 
@@ -68,15 +69,17 @@ For full private wiki ingestion through the official Azure DevOps wiki API, set:
 AZURE_DEVOPS_PAT=your_pat
 AZURE_DEVOPS_ORG=your-org
 AZURE_DEVOPS_PROJECT=your-project
+AZURE_DEVOPS_PROJECTS=project-a,project-b,project-c
 AZURE_DEVOPS_WIKI=
 AZURE_DEVOPS_WIKI_PATH=/
 AZURE_DEVOPS_API_VERSION=7.1
 ```
 
-If `AZURE_DEVOPS_WIKI` is blank, the bot lists all wikis in the project and recursively indexes every wiki.
-If `AZURE_DEVOPS_WIKI` is set, it only indexes that one wiki.
-This path includes private pages and indexes page content directly into the bot.
-Your PAT needs wiki read access. For Azure DevOps REST wiki APIs, the documented scope is `vso.wiki`.
+`AZURE_DEVOPS_PROJECTS` is a comma-separated list of project names under the same `AZURE_DEVOPS_ORG`. When set, the bot iterates each project and recursively indexes every wiki it can read. Use this for multi-project setups so a single ingest can train on several wikis at once.
+
+If only `AZURE_DEVOPS_PROJECT` is set (and `AZURE_DEVOPS_PROJECTS` is empty), the bot falls back to single-project mode. If `AZURE_DEVOPS_WIKI` is blank, every wiki in the project is indexed; if it is set (and only one project is configured), only that wiki is indexed. `AZURE_DEVOPS_WIKI` is ignored when multiple projects are configured.
+
+Each indexed wiki chunk carries `project` and `wiki` metadata so retrieved answers stay traceable to their source project. Your PAT needs wiki read access across all listed projects. For Azure DevOps REST wiki APIs, the documented scope is `vso.wiki`. If one project fails (e.g., the PAT lacks access), the ingest logs a warning and continues with the remaining projects.
 For public Google Docs links, you can paste the normal sharing URL; the loader automatically uses the text export endpoint.
 
 ## 4. Build index
@@ -144,7 +147,8 @@ In `.env`:
 - Lower `FAST_PATH_MIN_RELEVANCE` if you want the bot to use direct extractive answers more often instead of waiting for the LLM.
 - Increase `CHUNK_SIZE` for broader context per chunk.
 - Set `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT`, and `AZURE_DEVOPS_PAT` to ingest all private project wikis.
-- Set `AZURE_DEVOPS_WIKI` only when you want to limit ingestion to one wiki.
+- Set `AZURE_DEVOPS_PROJECTS` (comma-separated) to ingest wikis from multiple projects in the same org.
+- Set `AZURE_DEVOPS_WIKI` only when you want to limit ingestion to one wiki (single-project mode only).
 
 ## Notes
 

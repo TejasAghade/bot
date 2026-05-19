@@ -20,6 +20,7 @@ def run_ingestion(append: bool = False, settings: Settings | None = None) -> dic
         azure_devops_pat=cfg.azure_devops_pat,
         azure_devops_org=cfg.azure_devops_org,
         azure_devops_project=cfg.azure_devops_project,
+        azure_devops_projects=cfg.azure_devops_projects_list,
         azure_devops_wiki=cfg.azure_devops_wiki,
         azure_devops_wiki_path=cfg.azure_devops_wiki_path,
         azure_devops_api_version=cfg.azure_devops_api_version,
