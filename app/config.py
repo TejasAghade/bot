@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     max_context_docs: int = 3
     max_context_chars: int = 3500
     min_relevance: float = 0.55
+    enable_fast_path: bool = False
     fast_path_min_relevance: float = 0.6
     fast_path_min_overlap: float = 0.2
     fast_path_max_docs: int = 2

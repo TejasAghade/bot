@@ -89,11 +89,12 @@ class RAGService:
         filtered = filtered[: self.settings.max_context_docs]
         sources = self._sources(filtered)
 
-        fast_answer = self._fast_answer(question, filtered)
-        if fast_answer:
-            result = RAGResult(answer=fast_answer, sources=sources, used_context=True)
-            self._remember(cache_key, result)
-            return result
+        if self.settings.enable_fast_path:
+            fast_answer = self._fast_answer(question, filtered)
+            if fast_answer:
+                result = RAGResult(answer=fast_answer, sources=sources, used_context=True)
+                self._remember(cache_key, result)
+                return result
 
         context = self._format_context(filtered)
         prompt = self._build_prompt(question, context)
