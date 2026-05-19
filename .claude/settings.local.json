@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.config import get_settings; from app.document_loader import load_documents; from app.ingestion import run_ingestion; s = get_settings\\(\\); print\\('projects_list:', s.azure_devops_projects_list\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip install \"fastembed==0.4.2\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip install \"fastembed==0.7.4\")",
+      "Bash(\"./.venv/Scripts/python.exe\" --version)",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip install --only-binary=:all: \"fastembed==0.8.0\")",
+      "Bash(py -3.12 --version)",
+      "Bash(py -0)",
+      "Bash(where python *)",
+      "Bash(where python3 *)",
+      "Bash(where python3.12)",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from langchain_community.embeddings.fastembed import FastEmbedEmbeddings; import fastembed; print\\('fastembed', fastembed.__version__\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" ingest.py)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(Get-Process *)",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.schemas import ChatRequest, ProjectsResponse; from app.document_loader import list_user_accessible_projects; print\\('routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\)]\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.rag import RAGService; from app.config import get_settings; print\\('ok, routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and not r.path.startswith\\('/openapi'\\)]\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.config import get_settings; s = get_settings\\(\\); print\\('enable_fast_path:', s.enable_fast_path\\)\")",
+      "Bash(npm install *)"
+    ]
+  }
+}
