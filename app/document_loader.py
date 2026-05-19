@@ -264,6 +264,43 @@ def load_all_azure_devops_project_wikis(
     return documents
 
 
+def list_user_accessible_projects(
+    organization: str,
+    azure_devops_pat: str,
+    api_version: str = "7.1",
+) -> list[str]:
+    org = quote(organization, safe="")
+    response = requests.get(
+        f"https://dev.azure.com/{org}/_apis/projects",
+        params={"api-version": api_version, "stateFilter": "wellFormed"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "drs-chatbot-projects/1.0",
+            **_basic_auth_headers(azure_devops_pat),
+        },
+        timeout=30,
+    )
+    _raise_for_azure_response(
+        response,
+        context=(
+            f"Azure DevOps project listing failed for organization '{organization}'. "
+            "Check that the supplied PAT is valid and has project-read access."
+        ),
+    )
+    payload = response.json()
+    items = payload if isinstance(payload, list) else (payload.get("value") or [])
+    names: list[str] = []
+    seen: set[str] = set()
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+    return names
+
+
 def split_documents(documents: list[Document], chunk_size: int, chunk_overlap: int) -> list[Document]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,

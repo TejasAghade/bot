@@ -41,14 +41,36 @@ class RAGService:
     def indexed_document_count(self) -> int:
         return self.vectorstore._collection.count()
 
-    def answer(self, question: str) -> RAGResult:
-        cache_key = self._cache_key(question)
+    def answer(
+        self,
+        question: str,
+        project: str | None = None,
+        allowed_projects: list[str] | None = None,
+    ) -> RAGResult:
+        project_filter = (project or "").strip() or None
+        scope_projects: list[str] | None = None
+        if not project_filter and allowed_projects is not None:
+            scope_projects = sorted({p.strip() for p in allowed_projects if p and p.strip()})
+            if not scope_projects:
+                # User has no accessible projects in the index — nothing to search.
+                empty = RAGResult(answer=UNKNOWN_ANSWER, sources=[], used_context=False)
+                return empty
+
+        cache_key = self._cache_key(question, project_filter, scope_projects)
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache.move_to_end(cache_key)
             return cached
 
-        raw_matches = self.vectorstore.similarity_search_with_score(question, k=self.settings.top_k)
+        search_kwargs: dict[str, object] = {"k": self.settings.top_k}
+        if project_filter:
+            search_kwargs["filter"] = {"project": project_filter}
+        elif scope_projects:
+            if len(scope_projects) == 1:
+                search_kwargs["filter"] = {"project": scope_projects[0]}
+            else:
+                search_kwargs["filter"] = {"project": {"$in": scope_projects}}
+        raw_matches = self.vectorstore.similarity_search_with_score(question, **search_kwargs)
         matches = [(doc, _distance_to_similarity(distance)) for doc, distance in raw_matches]
         filtered = [(doc, score) for doc, score in matches if score >= self.settings.min_relevance]
 
@@ -151,9 +173,20 @@ Question:
             return None
         return _format_extractive_answer(chosen)
 
-    def _cache_key(self, question: str) -> str:
+    def _cache_key(
+        self,
+        question: str,
+        project: str | None = None,
+        scope_projects: list[str] | None = None,
+    ) -> str:
         normalized = " ".join(question.lower().split())
-        return f"{self._cache_revision}:{normalized}"
+        if project:
+            scope = f"p={project.lower()}"
+        elif scope_projects:
+            scope = "s=" + ",".join(p.lower() for p in scope_projects)
+        else:
+            scope = "all"
+        return f"{self._cache_revision}:{scope}:{normalized}"
 
     def _remember(self, cache_key: str, result: RAGResult) -> None:
         self._cache[cache_key] = result

@@ -1,13 +1,26 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+import hashlib
+import threading
+import time
+
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.document_loader import DocumentLoadError
+from app.document_loader import DocumentLoadError, list_user_accessible_projects
 from app.ingestion import run_ingestion
 from app.rag import RAGService
-from app.schemas import ChatRequest, ChatResponse, IngestRequest, IngestResponse
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    IngestRequest,
+    IngestResponse,
+    ProjectsResponse,
+)
+
+# How long to trust the (PAT -> accessible projects) lookup before re-querying AzDO.
+PAT_PROJECTS_TTL_SECONDS = 300
 
 settings = get_settings()
 app = FastAPI(title="Document-Only Chatbot API", version="1.0.0")
@@ -21,6 +34,8 @@ app.add_middleware(
 )
 
 _rag_service: RAGService | None = None
+_pat_projects_cache: dict[str, tuple[float, list[str]]] = {}
+_pat_projects_lock = threading.Lock()
 
 
 def rag_service() -> RAGService:
@@ -28,6 +43,60 @@ def rag_service() -> RAGService:
     if _rag_service is None:
         _rag_service = RAGService(settings)
     return _rag_service
+
+
+def _pat_fingerprint(pat: str) -> str:
+    return hashlib.sha256(pat.encode("utf-8")).hexdigest()
+
+
+def _resolve_accessible_projects(pat: str) -> list[str]:
+    """Return ingested projects the PAT can read, using a short-lived cache."""
+    if not settings.azure_devops_org:
+        raise HTTPException(
+            status_code=500,
+            detail="AZURE_DEVOPS_ORG is not configured on the server.",
+        )
+
+    fingerprint = _pat_fingerprint(pat)
+    now = time.monotonic()
+    with _pat_projects_lock:
+        cached = _pat_projects_cache.get(fingerprint)
+        if cached and now - cached[0] < PAT_PROJECTS_TTL_SECONDS:
+            return list(cached[1])
+
+    try:
+        user_projects = list_user_accessible_projects(
+            organization=settings.azure_devops_org,
+            azure_devops_pat=pat,
+            api_version=settings.azure_devops_api_version,
+        )
+    except DocumentLoadError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    ingested = settings.azure_devops_projects_list
+    if not ingested:
+        accessible: list[str] = []
+    else:
+        ingested_lower = {name.lower(): name for name in ingested}
+        accessible = [
+            ingested_lower[name.lower()]
+            for name in user_projects
+            if name.lower() in ingested_lower
+        ]
+
+    with _pat_projects_lock:
+        _pat_projects_cache[fingerprint] = (now, list(accessible))
+    return accessible
+
+
+def _require_pat(header_value: str | None) -> str:
+    pat = (header_value or "").strip()
+    if not pat:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing X-Azure-Devops-Pat header.",
+        )
+    return pat
 
 
 @app.get("/health")
@@ -52,10 +121,35 @@ def ingest(payload: IngestRequest) -> IngestResponse:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
+def chat(
+    payload: ChatRequest,
+    x_azure_devops_pat: str | None = Header(default=None, alias="X-Azure-Devops-Pat"),
+) -> ChatResponse:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    pat = _require_pat(x_azure_devops_pat)
+    accessible_projects = _resolve_accessible_projects(pat)
+    if not accessible_projects:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to any ingested projects.",
+        )
+
+    requested_project = (payload.project or "").strip() or None
+    if requested_project:
+        accessible_lower = {name.lower(): name for name in accessible_projects}
+        if requested_project.lower() not in accessible_lower:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Unauthorized: you do not have access to project "
+                    f"'{requested_project}'."
+                ),
+            )
+        # Normalize casing to whatever the index stored.
+        requested_project = accessible_lower[requested_project.lower()]
 
     service = rag_service()
     if service.indexed_document_count() == 0:
@@ -64,8 +158,22 @@ def chat(payload: ChatRequest) -> ChatResponse:
             detail="No indexed data found. Run /ingest first.",
         )
 
-    result = service.answer(question)
+    result = service.answer(
+        question,
+        project=requested_project,
+        allowed_projects=None if requested_project else accessible_projects,
+    )
     return ChatResponse(
         answer=result.answer,
         used_context=result.used_context,
+        project=requested_project,
     )
+
+
+@app.get("/projects", response_model=ProjectsResponse)
+def projects(
+    x_azure_devops_pat: str | None = Header(default=None, alias="X-Azure-Devops-Pat"),
+) -> ProjectsResponse:
+    pat = _require_pat(x_azure_devops_pat)
+    accessible = _resolve_accessible_projects(pat)
+    return ProjectsResponse(projects=accessible)
