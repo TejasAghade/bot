@@ -20,7 +20,10 @@
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.schemas import ChatRequest, ProjectsResponse; from app.document_loader import list_user_accessible_projects; print\\('routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\)]\\)\")",
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.rag import RAGService; from app.config import get_settings; print\\('ok, routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and not r.path.startswith\\('/openapi'\\)]\\)\")",
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.config import get_settings; s = get_settings\\(\\); print\\('enable_fast_path:', s.enable_fast_path\\)\")",
-      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app, _resolve_accessible_projects, _pat_projects_cache; print\\('ok, cache size:', len\\(_pat_projects_cache\\)\\)\")"
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app, _resolve_accessible_projects, _pat_projects_cache; print\\('ok, cache size:', len\\(_pat_projects_cache\\)\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip install \"msal==1.31.0\" \"python-docx==1.1.2\" \"openpyxl==3.1.5\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.sharepoint_loader import load_sharepoint_documents, _parse_url; from app.config import get_settings; from app.ingestion import run_ingestion; t = _parse_url\\('https://adanigreenenergy.sharepoint.com/sites/MySite/Shared Documents/digital-routing-system/Sub'\\); print\\('parsed:', t\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.sharepoint_loader import _parse_url; t = _parse_url\\('https://adanigreenenergy.sharepoint.com/sites/MySite/Shared Documents/digital-routing-system'\\); print\\('project_name =', t.project_name\\); print\\('folder_path =', t.folder_path\\); print\\('drive_segment =', t.drive_segment\\)\")"
     ]
   }
 }

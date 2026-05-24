@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     azure_devops_wiki: str | None = None
     azure_devops_wiki_path: str = "/"
     azure_devops_api_version: str = "7.1"
+    sharepoint_tenant_id: str | None = None
+    sharepoint_client_id: str | None = None
+    sharepoint_client_secret: str | None = None
+    sharepoint_urls: str | None = None
     cors_origins: str = "*"
 
     model_config = SettingsConfigDict(
@@ -72,6 +76,17 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def sharepoint_urls_list(self) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for raw in (self.sharepoint_urls or "").split(","):
+            url = raw.strip()
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        return urls
 
     @property
     def azure_devops_projects_list(self) -> list[str]:

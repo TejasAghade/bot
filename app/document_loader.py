@@ -31,10 +31,35 @@ def load_documents(
     azure_devops_wiki: str | None = None,
     azure_devops_wiki_path: str = "/",
     azure_devops_api_version: str = "7.1",
+    sharepoint_urls: list[str] | None = None,
+    sharepoint_tenant_id: str | None = None,
+    sharepoint_client_id: str | None = None,
+    sharepoint_client_secret: str | None = None,
 ) -> list[Document]:
     documents = load_local_documents(data_dir)
     if urls_file:
         documents.extend(load_url_documents(urls_file, azure_devops_pat=azure_devops_pat))
+
+    if sharepoint_urls:
+        try:
+            from app.sharepoint_loader import (
+                SharePointLoadError,
+                load_sharepoint_documents,
+            )
+        except ImportError as exc:  # pragma: no cover
+            logger.warning("SharePoint loader unavailable: %s", exc)
+        else:
+            try:
+                documents.extend(
+                    load_sharepoint_documents(
+                        urls=sharepoint_urls,
+                        tenant_id=sharepoint_tenant_id or "",
+                        client_id=sharepoint_client_id or "",
+                        client_secret=sharepoint_client_secret or "",
+                    )
+                )
+            except SharePointLoadError as exc:
+                logger.warning("SharePoint ingestion skipped: %s", exc)
 
     projects = _resolve_project_list(azure_devops_projects, azure_devops_project)
     if azure_devops_pat and azure_devops_org and projects:
