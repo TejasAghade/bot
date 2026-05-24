@@ -50,7 +50,14 @@ def _pat_fingerprint(pat: str) -> str:
 
 
 def _resolve_accessible_projects(pat: str) -> list[str]:
-    """Return ingested projects the PAT can read, using a short-lived cache."""
+    """Return projects the PAT can read in Azure DevOps, using a short-lived cache.
+
+    Access is always sourced from AzDO via the caller's PAT. The server's
+    AZURE_DEVOPS_PROJECTS env var only controls what gets ingested; it does
+    not gate what a user is allowed to ask about. If a project the user can
+    access has not been ingested, retrieval simply returns no results for it
+    (there's no data in the vectorstore to leak).
+    """
     if not settings.azure_devops_org:
         raise HTTPException(
             status_code=500,
@@ -73,20 +80,9 @@ def _resolve_accessible_projects(pat: str) -> list[str]:
     except DocumentLoadError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    ingested = settings.azure_devops_projects_list
-    if not ingested:
-        accessible: list[str] = []
-    else:
-        ingested_lower = {name.lower(): name for name in ingested}
-        accessible = [
-            ingested_lower[name.lower()]
-            for name in user_projects
-            if name.lower() in ingested_lower
-        ]
-
     with _pat_projects_lock:
-        _pat_projects_cache[fingerprint] = (now, list(accessible))
-    return accessible
+        _pat_projects_cache[fingerprint] = (now, list(user_projects))
+    return user_projects
 
 
 def _require_pat(header_value: str | None) -> str:
@@ -134,7 +130,7 @@ def chat(
     if not accessible_projects:
         raise HTTPException(
             status_code=403,
-            detail="You do not have access to any ingested projects.",
+            detail="Your PAT has no project access in this Azure DevOps organization.",
         )
 
     requested_project = (payload.project or "").strip() or None
@@ -148,7 +144,6 @@ def chat(
                     f"'{requested_project}'."
                 ),
             )
-        # Normalize casing to whatever the index stored.
         requested_project = accessible_lower[requested_project.lower()]
 
     service = rag_service()

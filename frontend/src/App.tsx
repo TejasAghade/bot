@@ -5,12 +5,31 @@ import { ProjectSidebar } from './ProjectSidebar'
 import { ChatPanel, type Message } from './ChatPanel'
 import { fetchProjects } from './api'
 import { clearPat, loadPat, savePat } from './auth'
+import { clearPersistentState, usePersistentState } from './usePersistentState'
 import './App.css'
+
+const HISTORY_KEY = 'chat_history_v1'
+
+type History = Record<string, Message[]>
+
+function sanitizeHistory(history: History): History {
+  const cleaned: History = {}
+  for (const [project, messages] of Object.entries(history)) {
+    if (!Array.isArray(messages)) continue
+    const settled = messages.filter(
+      (m) => !(m.role === 'assistant' && !m.content && !m.error),
+    )
+    if (settled.length) cleaned[project] = settled
+  }
+  return cleaned
+}
 
 function App() {
   const [pat, setPat] = useState<string>(() => loadPat())
   const [selected, setSelected] = useState<string | null>(null)
-  const [history, setHistory] = useState<Record<string, Message[]>>({})
+  const [history, setHistory] = usePersistentState<History>(HISTORY_KEY, {}, {
+    sanitize: sanitizeHistory,
+  })
 
   const projectsQuery = useQuery({
     queryKey: ['projects', pat],
@@ -29,11 +48,12 @@ function App() {
     if (projectsQuery.isError) {
       // PAT became invalid — drop it and bounce to gate.
       clearPat()
+      clearPersistentState(HISTORY_KEY)
       setPat('')
       setSelected(null)
       setHistory({})
     }
-  }, [projectsQuery.isError])
+  }, [projectsQuery.isError, setHistory])
 
   const handleAuthenticated = useCallback((token: string, projects: string[]) => {
     savePat(token)
@@ -43,10 +63,11 @@ function App() {
 
   const signOut = useCallback(() => {
     clearPat()
+    clearPersistentState(HISTORY_KEY)
     setPat('')
     setSelected(null)
     setHistory({})
-  }, [])
+  }, [setHistory])
 
   const updateHistory = useCallback(
     (project: string, updater: (prev: Message[]) => Message[]) => {

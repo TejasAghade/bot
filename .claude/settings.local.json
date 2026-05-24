@@ -20,7 +20,7 @@
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.schemas import ChatRequest, ProjectsResponse; from app.document_loader import list_user_accessible_projects; print\\('routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\)]\\)\")",
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app; from app.rag import RAGService; from app.config import get_settings; print\\('ok, routes:', [r.path for r in app.routes if hasattr\\(r, 'path'\\) and not r.path.startswith\\('/openapi'\\)]\\)\")",
       "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.config import get_settings; s = get_settings\\(\\); print\\('enable_fast_path:', s.enable_fast_path\\)\")",
-      "Bash(npm install *)"
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from app.main import app, _resolve_accessible_projects, _pat_projects_cache; print\\('ok, cache size:', len\\(_pat_projects_cache\\)\\)\")"
     ]
   }
 }
