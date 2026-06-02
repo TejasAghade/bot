@@ -37,6 +37,22 @@ class Settings(BaseSettings):
     azure_devops_wiki: str | None = None
     azure_devops_wiki_path: str = "/"
     azure_devops_api_version: str = "7.1"
+
+    # SharePoint (Microsoft Graph, app-only / client-credentials flow).
+    sharepoint_tenant_id: str | None = None
+    sharepoint_client_id: str | None = None
+    sharepoint_client_secret: str | None = None
+    # Optional: limit ingestion to a single site. Accepts a Graph site id or an
+    # addressable path like "contoso.sharepoint.com:/sites/Marketing". When blank,
+    # every site the app can read is enumerated.
+    sharepoint_site: str | None = None
+    # Optional comma-separated folder scope. When blank, all folders are ingested
+    # (current behaviour). When set, only files under matching folders are ingested.
+    # This is also the seam for later per-folder answer scoping.
+    sharepoint_folders: str | None = None
+    sharepoint_graph_base_url: str = "https://graph.microsoft.com/v1.0"
+    sharepoint_login_base_url: str = "https://login.microsoftonline.com"
+
     cors_origins: str = "*"
 
     model_config = SettingsConfigDict(
@@ -87,6 +103,26 @@ class Settings(BaseSettings):
             if single:
                 projects.append(single)
         return projects
+
+    @property
+    def sharepoint_enabled(self) -> bool:
+        return bool(
+            self.sharepoint_tenant_id
+            and self.sharepoint_client_id
+            and self.sharepoint_client_secret
+        )
+
+    @property
+    def sharepoint_folders_list(self) -> list[str]:
+        folders: list[str] = []
+        seen: set[str] = set()
+        for raw in (self.sharepoint_folders or "").split(","):
+            name = raw.strip()
+            key = name.lower()
+            if name and key not in seen:
+                seen.add(key)
+                folders.append(name)
+        return folders
 
 
 @lru_cache

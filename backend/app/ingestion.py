@@ -24,6 +24,13 @@ def run_ingestion(append: bool = False, settings: Settings | None = None) -> dic
         azure_devops_wiki=cfg.azure_devops_wiki,
         azure_devops_wiki_path=cfg.azure_devops_wiki_path,
         azure_devops_api_version=cfg.azure_devops_api_version,
+        sharepoint_tenant_id=cfg.sharepoint_tenant_id,
+        sharepoint_client_id=cfg.sharepoint_client_id,
+        sharepoint_client_secret=cfg.sharepoint_client_secret,
+        sharepoint_site=cfg.sharepoint_site,
+        sharepoint_folders=cfg.sharepoint_folders_list,
+        sharepoint_graph_base_url=cfg.sharepoint_graph_base_url,
+        sharepoint_login_base_url=cfg.sharepoint_login_base_url,
     )
     if not documents:
         return {
