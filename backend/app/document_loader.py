@@ -15,6 +15,12 @@ from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
 
+# Safeguards against pathological spreadsheets. openpyxl will happily iterate
+# over hundreds of thousands of phantom rows (formatting/data left in a huge
+# used-range), which stalls ingestion for hours. Cap the work per file.
+MAX_XLSX_ROWS_PER_SHEET = 20_000
+MAX_XLSX_CHARS = 2_000_000
+
 SUPPORTED_EXTENSIONS = {
     ".txt",
     ".md",
@@ -29,6 +35,31 @@ SUPPORTED_EXTENSIONS = {
 
 class DocumentLoadError(RuntimeError):
     pass
+
+
+class IncrementalSink:
+    """Persist documents one at a time so ingestion is interruptible and resumable.
+
+    ``persist`` is called with each newly loaded Document (it chunks the document and
+    writes it to the vector store immediately). ``ingested`` holds the ``source`` keys
+    already present in the store, so an interrupted run can be resumed with
+    ``append=True`` without reprocessing files that finished earlier.
+    """
+
+    def __init__(self, persist, ingested=None):
+        self._persist = persist
+        self.ingested: set[str] = set(ingested or ())
+
+    def is_ingested(self, source: str) -> bool:
+        return bool(source) and source in self.ingested
+
+    def emit(self, doc: Document) -> None:
+        source = str(doc.metadata.get("source", ""))
+        if self.is_ingested(source):
+            return
+        self._persist(doc)
+        if source:
+            self.ingested.add(source)
 
 
 def load_documents(
@@ -48,10 +79,23 @@ def load_documents(
     sharepoint_folders: list[str] | None = None,
     sharepoint_graph_base_url: str = "https://graph.microsoft.com/v1.0",
     sharepoint_login_base_url: str = "https://login.microsoftonline.com",
+    sink: IncrementalSink | None = None,
 ) -> list[Document]:
-    documents = load_local_documents(data_dir)
+    # When a sink is provided, each document is persisted the moment it is loaded
+    # (interruptible/resumable ingestion). Otherwise documents are collected into a
+    # list and returned, preserving the original batch API for other callers/tests.
+    collected: list[Document] = []
+
+    def emit(docs: list[Document]) -> None:
+        for doc in docs:
+            if sink is not None:
+                sink.emit(doc)
+            else:
+                collected.append(doc)
+
+    emit(load_local_documents(data_dir))
     if urls_file:
-        documents.extend(load_url_documents(urls_file, azure_devops_pat=azure_devops_pat))
+        emit(load_url_documents(urls_file, azure_devops_pat=azure_devops_pat))
 
     projects = _resolve_project_list(azure_devops_projects, azure_devops_project)
     if azure_devops_pat and azure_devops_org and projects:
@@ -62,7 +106,7 @@ def load_documents(
         for project_name in projects:
             try:
                 if restrict_to_single_wiki:
-                    documents.extend(
+                    emit(
                         load_azure_devops_wiki_documents(
                             organization=azure_devops_org,
                             project=project_name,
@@ -73,7 +117,7 @@ def load_documents(
                         )
                     )
                 else:
-                    documents.extend(
+                    emit(
                         load_all_azure_devops_project_wikis(
                             organization=azure_devops_org,
                             project=project_name,
@@ -87,20 +131,23 @@ def load_documents(
 
     if sharepoint_tenant_id and sharepoint_client_id and sharepoint_client_secret:
         try:
-            documents.extend(
-                load_sharepoint_documents(
-                    tenant_id=sharepoint_tenant_id,
-                    client_id=sharepoint_client_id,
-                    client_secret=sharepoint_client_secret,
-                    site=sharepoint_site,
-                    folders=sharepoint_folders,
-                    graph_base_url=sharepoint_graph_base_url,
-                    login_base_url=sharepoint_login_base_url,
-                )
+            sharepoint_docs = load_sharepoint_documents(
+                tenant_id=sharepoint_tenant_id,
+                client_id=sharepoint_client_id,
+                client_secret=sharepoint_client_secret,
+                site=sharepoint_site,
+                folders=sharepoint_folders,
+                graph_base_url=sharepoint_graph_base_url,
+                login_base_url=sharepoint_login_base_url,
+                sink=sink,
             )
+            # With a sink, SharePoint files are emitted per-file as they load (so a
+            # pause keeps them); the return value is empty in that case.
+            if sink is None:
+                collected.extend(sharepoint_docs)
         except DocumentLoadError as exc:
             logger.warning("Skipping SharePoint ingestion: %s", exc)
-    return documents
+    return collected
 
 
 def _resolve_project_list(
@@ -342,6 +389,7 @@ def load_sharepoint_documents(
     folders: list[str] | None = None,
     graph_base_url: str = "https://graph.microsoft.com/v1.0",
     login_base_url: str = "https://login.microsoftonline.com",
+    sink: IncrementalSink | None = None,
 ) -> list[Document]:
     """Ingest files from SharePoint via Microsoft Graph (app-only auth).
 
@@ -350,6 +398,10 @@ def load_sharepoint_documents(
     each supported file. Each resulting Document carries ``folder``/``site``/``drive``
     metadata so answers stay traceable and so per-folder query scoping can be added
     later with the same pattern used for Azure DevOps ``project`` filtering.
+
+    When ``sink`` is provided, each file is persisted the moment it loads (and files
+    already in the store are skipped before download), so ingestion is resumable; the
+    returned list is empty in that case.
     """
     token = _get_graph_token(tenant_id, client_id, client_secret, login_base_url)
     session = requests.Session()
@@ -408,6 +460,7 @@ def load_sharepoint_documents(
                     drive_name=drive_name,
                     folder_filter=folder_filter,
                     documents=documents,
+                    sink=sink,
                 )
             except DocumentLoadError as exc:
                 logger.warning(
@@ -495,6 +548,7 @@ def _walk_sharepoint_folder(
     drive_name: str,
     folder_filter: list[str] | None,
     documents: list[Document],
+    sink: IncrementalSink | None = None,
 ) -> None:
     children = _graph_get_all(
         session,
@@ -520,6 +574,7 @@ def _walk_sharepoint_folder(
                 drive_name=drive_name,
                 folder_filter=folder_filter,
                 documents=documents,
+                sink=sink,
             )
         elif isinstance(child.get("file"), dict):
             document = _load_sharepoint_file(
@@ -531,9 +586,13 @@ def _walk_sharepoint_folder(
                 site_name=site_name,
                 drive_name=drive_name,
                 folder_filter=folder_filter,
+                sink=sink,
             )
             if document is not None:
-                documents.append(document)
+                if sink is not None:
+                    sink.emit(document)
+                else:
+                    documents.append(document)
 
 
 def _load_sharepoint_file(
@@ -545,6 +604,7 @@ def _load_sharepoint_file(
     site_name: str,
     drive_name: str,
     folder_filter: list[str] | None,
+    sink: IncrementalSink | None = None,
 ) -> Document | None:
     name = str(item.get("name") or "").strip()
     if Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -555,6 +615,22 @@ def _load_sharepoint_file(
     item_id = str(item.get("id") or "").strip()
     if not item_id:
         return None
+
+    # Resume support: skip files already in the store before the expensive download.
+    # This key must match the ``source`` metadata set on the Document below.
+    normalized_folder = folder_path or "/"
+    web_url = str(item.get("webUrl") or "")
+    source_key = web_url or f"sharepoint:{site_name}:{normalized_folder}/{name}"
+    if sink is not None and sink.is_ingested(source_key):
+        logger.info("Skipping already-ingested SharePoint file: '%s'", name)
+        return None
+
+    logger.info(
+        "Processing SharePoint file: site='%s' folder='%s' file='%s'",
+        site_name,
+        folder_path or "/",
+        name,
+    )
     response = session.get(
         f"{base}/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}/content",
         timeout=60,
@@ -567,12 +643,10 @@ def _load_sharepoint_file(
     if not text:
         return None
 
-    web_url = str(item.get("webUrl") or "")
-    normalized_folder = folder_path or "/"
     return Document(
         page_content=text,
         metadata={
-            "source": web_url or f"sharepoint:{site_name}:{normalized_folder}/{name}",
+            "source": source_key,
             "folder": normalized_folder,
             "site": site_name,
             "drive": drive_name,
@@ -681,17 +755,38 @@ def _extract_xlsx_bytes(data: bytes) -> str:
         return ""
 
     parts: list[str] = []
+    total_chars = 0
+    truncated = False
     try:
         for sheet in workbook.worksheets:
+            if truncated:
+                break
             rows_text: list[str] = []
-            for row in sheet.iter_rows(values_only=True):
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if row_index >= MAX_XLSX_ROWS_PER_SHEET:
+                    logger.warning(
+                        "Sheet '%s' exceeded %d rows; truncating.",
+                        sheet.title,
+                        MAX_XLSX_ROWS_PER_SHEET,
+                    )
+                    truncated = True
+                    break
                 cells = [
                     str(value).strip()
                     for value in row
                     if value is not None and str(value).strip()
                 ]
                 if cells:
-                    rows_text.append(" | ".join(cells))
+                    line = " | ".join(cells)
+                    rows_text.append(line)
+                    total_chars += len(line) + 1
+                    if total_chars >= MAX_XLSX_CHARS:
+                        logger.warning(
+                            "Spreadsheet exceeded %d chars; truncating.",
+                            MAX_XLSX_CHARS,
+                        )
+                        truncated = True
+                        break
             if rows_text:
                 parts.append(f"# Sheet: {sheet.title}\n" + "\n".join(rows_text))
     finally:
@@ -702,15 +797,15 @@ def _extract_xlsx_bytes(data: bytes) -> str:
 def _extract_pdf_bytes(data: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(data))
+        parts: list[str] = []
+        for page in reader.pages:
+            text = _clean_text(page.extract_text() or "")
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("Failed to parse SharePoint PDF: %s", exc)
         return ""
-    parts: list[str] = []
-    for page in reader.pages:
-        text = _clean_text(page.extract_text() or "")
-        if text:
-            parts.append(text)
-    return "\n\n".join(parts)
 
 
 def _extract_html_bytes(data: bytes) -> str:

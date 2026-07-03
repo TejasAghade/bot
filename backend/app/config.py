@@ -13,8 +13,15 @@ class Settings(BaseSettings):
     chunk_size: int = 900
     chunk_overlap: int = 150
     top_k: int = 4
-    max_context_docs: int = 3
-    max_context_chars: int = 3500
+    # Hybrid retrieval: fetch a larger candidate pool by vector similarity, then
+    # re-rank by combining semantic similarity with keyword overlap (weighted higher
+    # for filename matches). This surfaces exact-title/keyword docs the small
+    # embedding model buries in pure-vector ranking.
+    rerank_candidates: int = 30
+    name_match_weight: float = 0.6
+    content_match_weight: float = 0.35
+    max_context_docs: int = 5
+    max_context_chars: int = 5000
     min_relevance: float = 0.55
     enable_fast_path: bool = False
     fast_path_min_relevance: float = 0.6
@@ -25,7 +32,11 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "llama3.2:3b"
-    llm_num_predict: int = 192
+    llm_num_predict: int = 512
+    # Disable model "thinking"/reasoning. Thinking models (e.g. gemma4:e4b) otherwise
+    # spend the whole token budget on internal reasoning and return an empty answer on
+    # CPU. False = thinking off (direct answers); set True only if you want reasoning.
+    llm_reasoning: bool = False
     ollama_keep_alive: str = "30m"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_threads: int | None = None

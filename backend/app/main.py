@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 
@@ -18,6 +19,12 @@ from app.schemas import (
     IngestResponse,
     ProjectsResponse,
 )
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # How long to trust the (PAT -> accessible projects) lookup before re-querying AzDO.
 PAT_PROJECTS_TTL_SECONDS = 300
@@ -125,13 +132,20 @@ def chat(
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    pat = _require_pat(x_azure_devops_pat)
-    accessible_projects = _resolve_accessible_projects(pat)
-    if not accessible_projects:
-        raise HTTPException(
-            status_code=403,
-            detail="Your PAT has no project access in this Azure DevOps organization.",
-        )
+    # Azure DevOps access is OPTIONAL. Without a (valid) PAT the bot still answers
+    # from non-AzDO sources (SharePoint, uploaded files, URLs). A valid PAT
+    # additionally unlocks Azure DevOps wiki content for the caller's projects.
+    pat = (x_azure_devops_pat or "").strip()
+    accessible_projects: list[str] = []
+    if pat:
+        try:
+            accessible_projects = _resolve_accessible_projects(pat)
+        except HTTPException as exc:
+            # A bad PAT must not block non-AzDO answers: log and continue without AzDO.
+            logger.warning(
+                "Azure DevOps access unavailable (%s); answering from non-AzDO sources only.",
+                exc.detail,
+            )
 
     requested_project = (payload.project or "").strip() or None
     if requested_project:
@@ -141,7 +155,8 @@ def chat(
                 status_code=403,
                 detail=(
                     f"Unauthorized: you do not have access to project "
-                    f"'{requested_project}'."
+                    f"'{requested_project}'. Supply a valid X-Azure-Devops-Pat with "
+                    "access to this project."
                 ),
             )
         requested_project = accessible_lower[requested_project.lower()]
@@ -162,6 +177,7 @@ def chat(
         answer=result.answer,
         used_context=result.used_context,
         project=requested_project,
+        sources=result.sources,
     )
 
 

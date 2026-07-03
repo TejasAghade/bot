@@ -10,10 +10,22 @@ class ChatRequest(BaseModel):
     )
 
 
+class SourceInfo(BaseModel):
+    origin: str = Field(
+        description="Where the context came from: 'sharepoint', 'wiki', 'web', or 'file'."
+    )
+    title: str = Field(description="File name or page title of the source.")
+    url: str | None = Field(default=None, description="Link to the source, if available.")
+    site: str | None = None
+    folder: str | None = None
+    project: str | None = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     used_context: bool
     project: str | None = None
+    sources: list[SourceInfo] = Field(default_factory=list)
 
 
 class IngestRequest(BaseModel):

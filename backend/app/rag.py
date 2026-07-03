@@ -15,8 +15,20 @@ UNKNOWN_ANSWER = "I don't know based on the provided documents."
 @dataclass
 class RAGResult:
     answer: str
-    sources: list[str]
+    sources: list[dict]
     used_context: bool
+
+
+def _origin_label(doc_type) -> str:
+    """Map a chunk's ``type`` metadata to a human-facing origin label."""
+    t = str(doc_type or "").lower()
+    if t == "sharepoint":
+        return "sharepoint"
+    if t == "azure_devops_wiki":
+        return "wiki"
+    if t == "url":
+        return "web"
+    return "file"
 
 
 class RAGService:
@@ -29,6 +41,7 @@ class RAGService:
             temperature=0,
             num_predict=settings.llm_num_predict,
             keep_alive=settings.ollama_keep_alive,
+            reasoning=settings.llm_reasoning,
         )
         self._cache: OrderedDict[str, RAGResult] = OrderedDict()
         self._cache_revision = 0
@@ -51,43 +64,22 @@ class RAGService:
         scope_projects: list[str] | None = None
         if not project_filter and allowed_projects is not None:
             scope_projects = sorted({p.strip() for p in allowed_projects if p and p.strip()})
-            if not scope_projects:
-                # User has no accessible projects in the index — nothing to search.
-                empty = RAGResult(answer=UNKNOWN_ANSWER, sources=[], used_context=False)
-                return empty
 
-        cache_key = self._cache_key(question, project_filter, scope_projects)
+        where, scope_token = self._build_scope_filter(project_filter, scope_projects)
+
+        cache_key = self._cache_key(question, scope_token)
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache.move_to_end(cache_key)
             return cached
 
-        search_kwargs: dict[str, object] = {"k": self.settings.top_k}
-        if project_filter:
-            search_kwargs["filter"] = {"project": project_filter}
-        elif scope_projects:
-            if len(scope_projects) == 1:
-                search_kwargs["filter"] = {"project": scope_projects[0]}
-            else:
-                search_kwargs["filter"] = {"project": {"$in": scope_projects}}
-        raw_matches = self.vectorstore.similarity_search_with_score(question, **search_kwargs)
-        matches = [(doc, _distance_to_similarity(distance)) for doc, distance in raw_matches]
-        filtered = [(doc, score) for doc, score in matches if score >= self.settings.min_relevance]
-
-        # Safe fallback for near-miss vector scores: only allow if question terms
-        # overlap strongly with the top retrieved chunk text.
-        if not filtered and matches:
-            top_doc, top_score = max(matches, key=lambda item: item[1])
-            if _term_overlap_ratio(question, top_doc.page_content) >= 0.5:
-                filtered = [(top_doc, top_score)]
-
+        filtered = self._retrieve(question, where)
         if not filtered:
             result = RAGResult(answer=UNKNOWN_ANSWER, sources=[], used_context=False)
             self._remember(cache_key, result)
             return result
 
-        filtered = filtered[: self.settings.max_context_docs]
-        sources = self._sources(filtered)
+        sources = self._source_infos(filtered)
 
         if self.settings.enable_fast_path:
             fast_answer = self._fast_answer(question, filtered)
@@ -106,6 +98,51 @@ class RAGService:
         result = RAGResult(answer=answer, sources=sources, used_context=True)
         self._remember(cache_key, result)
         return result
+
+    def _retrieve(self, question: str, where: dict | None):
+        """Hybrid retrieval: vector search, then lexical re-rank + dedup by source.
+
+        Pure vector similarity from a small embedding model buries docs whose title or
+        wording exactly matches the query. We fetch a wider candidate pool and re-rank
+        each candidate by ``semantic + w_content*content_overlap + w_name*name_overlap``,
+        keep the best chunk per source, then apply the relevance gate.
+        """
+        k = max(self.settings.top_k, self.settings.rerank_candidates)
+        search_kwargs: dict[str, object] = {"k": k}
+        if where is not None:
+            search_kwargs["filter"] = where
+        raw_matches = self.vectorstore.similarity_search_with_score(question, **search_kwargs)
+
+        # Re-rank with a lexical boost and keep only the strongest chunk per source.
+        best: dict[str, tuple[float, object, float]] = {}
+        for doc, distance in raw_matches:
+            semantic = _distance_to_similarity(distance)
+            name = str(doc.metadata.get("file_name") or doc.metadata.get("source") or "")
+            name_norm = re.sub(r"[^a-zA-Z0-9]+", " ", name)
+            content_overlap = _term_overlap_ratio(question, doc.page_content)
+            name_overlap = _term_overlap_ratio(question, name_norm)
+            combined = (
+                semantic
+                + self.settings.content_match_weight * content_overlap
+                + self.settings.name_match_weight * name_overlap
+            )
+            key = str(doc.metadata.get("source") or id(doc))
+            if key not in best or combined > best[key][0]:
+                best[key] = (combined, doc, semantic)
+
+        ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
+
+        # Relevance gate on the semantic score, but keep re-ranked order (so a strong
+        # title/keyword match outranks a marginally-higher-similarity but off-topic doc).
+        filtered = [(doc, semantic) for combined, doc, semantic in ranked if semantic >= self.settings.min_relevance]
+
+        # Near-miss fallback: allow the top re-ranked doc if it overlaps the query well.
+        if not filtered and ranked:
+            combined, doc, semantic = ranked[0]
+            if _term_overlap_ratio(question, doc.page_content) >= 0.5:
+                filtered = [(doc, semantic)]
+
+        return filtered[: self.settings.max_context_docs]
 
     def _format_context(self, filtered_matches) -> str:
         parts: list[str] = []
@@ -142,14 +179,28 @@ Question:
 {question}
 """
 
-    def _sources(self, filtered_matches) -> list[str]:
-        output: list[str] = []
+    def _source_infos(self, filtered_matches) -> list[dict]:
+        """Structured citations so the API can show where each answer came from."""
+        output: list[dict] = []
+        seen: set[tuple] = set()
         for doc, _score in filtered_matches:
-            source = str(doc.metadata.get("source", "unknown"))
-            page = doc.metadata.get("page")
-            display = f"{source} (page {page})" if page else source
-            if display not in output:
-                output.append(display)
+            meta = doc.metadata
+            source = str(meta.get("source", "") or "")
+            origin = _origin_label(meta.get("type"))
+            title = str(meta.get("file_name") or meta.get("path") or source or "unknown")
+            page = meta.get("page")
+            if page:
+                title = f"{title} (page {page})"
+            key = (origin, title, source)
+            if key in seen:
+                continue
+            seen.add(key)
+            info: dict = {"origin": origin, "title": title, "url": source or None}
+            for field in ("site", "folder", "project"):
+                value = meta.get(field)
+                if value:
+                    info[field] = str(value)
+            output.append(info)
         return output
 
     def _fast_answer(self, question: str, filtered_matches) -> str | None:
@@ -174,20 +225,37 @@ Question:
             return None
         return _format_extractive_answer(chosen)
 
-    def _cache_key(
+    def _build_scope_filter(
         self,
-        question: str,
-        project: str | None = None,
-        scope_projects: list[str] | None = None,
-    ) -> str:
-        normalized = " ".join(question.lower().split())
-        if project:
-            scope = f"p={project.lower()}"
+        project_filter: str | None,
+        scope_projects: list[str] | None,
+    ) -> tuple[dict | None, str]:
+        """Build the metadata filter enforcing per-source authorization.
+
+        Azure DevOps wiki chunks are project-scoped: they are only searchable for
+        projects the caller can access. Every other source (SharePoint, uploaded
+        files, URLs) is not project-gated and is always searchable. Because every
+        chunk carries a ``type`` (only AzDO wiki chunks use ``azure_devops_wiki``),
+        ``type != azure_devops_wiki`` reliably selects all non-AzDO content.
+        """
+        non_azdo = {"type": {"$ne": "azure_devops_wiki"}}
+        if project_filter:
+            azdo_clause: dict = {"project": project_filter}
+            token = f"p={project_filter.lower()}"
         elif scope_projects:
-            scope = "s=" + ",".join(p.lower() for p in scope_projects)
+            if len(scope_projects) == 1:
+                azdo_clause = {"project": scope_projects[0]}
+            else:
+                azdo_clause = {"project": {"$in": scope_projects}}
+            token = "s=" + ",".join(p.lower() for p in scope_projects)
         else:
-            scope = "all"
-        return f"{self._cache_revision}:{scope}:{normalized}"
+            # No accessible Azure DevOps projects (e.g. no/invalid PAT): non-AzDO only.
+            return non_azdo, "nonazdo"
+        return {"$or": [non_azdo, azdo_clause]}, token
+
+    def _cache_key(self, question: str, scope_token: str) -> str:
+        normalized = " ".join(question.lower().split())
+        return f"{self._cache_revision}:{scope_token}:{normalized}"
 
     def _remember(self, cache_key: str, result: RAGResult) -> None:
         self._cache[cache_key] = result
